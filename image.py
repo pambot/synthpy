@@ -2,9 +2,10 @@ import os
 import numpy as np
 import pandas as pd
 from uuid import uuid4
-from PIL import Image, ImageDraw, ImageChops
-from PIL.TiffImagePlugin import AppendingTiffWriter
+from skimage.draw import circle
+from skimage.io import use_plugin, imread, imshow, imsave
 
+use_plugin('tifffile', 'imsave')
 
 # base class of simulation objects
 class SynthImageObject(object):
@@ -13,11 +14,13 @@ class SynthImageObject(object):
         self.index = 0
         self.label = None
         self.loc = (0, 0)
-        self.shape = (1, 1)
+        self.shape = (1, 1, 3)
         self.time_func = lambda obj: obj
         self.time_params = {}
         self.trans_func = lambda obj: obj
         self.trans_params = {}
+        self.loc_func = lambda obj: obj
+        self.loc_params = {}
         self.img = None
         self.mask = None
     
@@ -36,34 +39,30 @@ class SynthImageObject(object):
         self.trans_params = kwargs
         return
     
-    def occupied_coords(self):
-        coords = []
-        for x in range(self.shape[0]):
-            for y in range(self.shape[1]):
-                if self.mask[x, y]:
-                    coords.append((self.loc[0]+x, self.loc[1]+y))
-        return coords
+    def set_loc_func(self, loc_func, kwargs={}):
+        self.loc_func = loc_func
+        self.loc_params = kwargs
+        return
 
 
 # specific types of simulation objects
 class Particle(SynthImageObject):
-    def __init__(self, label, shape=(5, 5), color=(255, 255, 255)):
+    def __init__(self, label, shape=(9, 9, 3), color=(255,255,255)):
         super().__init__()
-        self.img = Image.new('RGBA', shape)
-        draw = ImageDraw.Draw(self.img)
-        draw.ellipse((1, 1, shape[0]-1, shape[1]-1), fill=color)
-        self.mask = make_mask(self.img)
         self.label = label
         self.shape = shape
+        self.img = np.zeros(shape, dtype=np.uint8)
+        cen = round(shape[0]/2)
+        rr, cc = circle(cen, cen, shape[0]-cen, shape=shape[:2])
+        self.img[rr, cc, :] = np.array(color)
 
 
 class Picture(SynthImageObject):
-    def __init__(self, filename, label):
+    def __init__(self, fname, label):
         super().__init__()
-        self.img = Image.open(filename)
-        self.mask = make_mask(self.img)
+        self.img = imread(fname)[:, :, :2]
         self.label = label
-        self.shape = self.img.size
+        self.shape = self.img.shape
 
 
 class PSF(SynthImageObject):
@@ -73,16 +72,19 @@ class PSF(SynthImageObject):
 
 # class for simulation frame
 class SynthImage(object):
-    def __init__(self, shape=(512, 512)):
+    def __init__(self, shape=(512, 512, 3)):
         self.index = 0
         self.shape = shape
-        self.img = Image.new('RGBA', self.shape, color=(0,0,0,255))
+        self.img = np.zeros(shape, dtype=np.uint8)
+        self.mask = np.zeros(shape, dtype=np.uint8)
         self.objs = []
-        self.occupied = {}
         self.noise_func = lambda img: img
         self.noise_params = {}
     
     def __str__(self):
+        return str(self.get_data())
+    
+    def get_data(self):
         cols = ['label', 'x_loc', 'y_loc']
         if self.objs:
             data = []
@@ -93,25 +95,52 @@ class SynthImage(object):
             df = pd.DataFrame(columns=cols, index=oids, data=data)
         else:
             df = pd.DataFrame(columns=cols)
-        return str(df)
+        return df
     
-    def add_objs(self, objs, loc_func, **kwargs):
-        overlap = Image.new('RGBA', self.shape)
+    def _bound_overflow(self, n0, n1, n2, bsh, fsh):
+        if bsh >= fsh:
+            raise ValueError('SynthObject should not be bigger than the SynthImage.')
+        if n1 < 0 and fsh > n2 >= 0:
+            bi1, bi2, fi1, fi2 = abs(n1), bsh, 0, n2
+        elif fsh > n1 >= 0 and n2 >= fsh:
+            bi1, bi2, fi1, fi2 = 0, fsh-n1, n1, fsh
+        elif fsh > n1 >= 0 and fsh > n2 >= 0:
+            bi1, bi2, fi1, fi2 = 0, bsh, n1, n2
+        else:
+            bi1, bi2, fi1, fi2 = 0, 0, 0, 0
+        return bi1, bi2, fi1, fi2
+    
+    def _embed_img(self, img, frame, loc):
+        f0, f1 = frame.shape[:2]
+        l0, l1 = loc
+        b0, b1 = img.shape[:2]
+        ybr, xbr = map(lambda b: round(b/2), (b0, b1))
+        yrm, xrm = b0-ybr, b1-xbr
+        y1, x1 = l0-ybr, l1-xbr
+        y2, x2 = l0+yrm, l1+xrm
+        ybi1, ybi2, yfi1, yfi2 = self._bound_overflow(l0, y1, y2, b0, f0)
+        xbi1, xbi2, xfi1, xfi2 = self._bound_overflow(l1, x1, x2, b1, f1)
+        frame[yfi1:yfi2, xfi1:xfi2, :] += img[ybi1:ybi2, xbi1:xbi2, :]
+        frame[frame > 255] = 255
+        return frame
+    
+    def add_objs(self, objs, loc_func, loc_params={}):
+        try:
+            loc_params['shape']
+        except KeyError:
+            loc_params['shape'] = self.shape[:2]
         for obj in objs:
-            obj.loc = loc_func(self, **kwargs)
-            overlap.paste(obj.img, box=obj.loc, mask=obj.img)
+            obj.loc_func = loc_func
+            obj.loc_params = loc_params
+            obj = obj.loc_func(obj, **obj.loc_params)
+            self.img = self._embed_img(obj.img, self.img, obj.loc)
             self.objs.append(obj)
-            try:
-                self.occupied[obj.label].update(obj.occupied_coords())
-            except KeyError:
-                self.occupied[obj.label] = set([])
-        self.img = ImageChops.add(self.img, overlap)
+        self._update_mask()
         return
     
     def update_objs(self):
-        self.img = Image.new('RGBA', self.shape, color=(0,0,0,255))
-        overlap = Image.new('RGBA', self.shape)
-        self.occupied = {}
+        self.img = np.zeros(self.shape, dtype=np.uint8)
+        self._update_mask()
         if not self.objs:
             raise ValueError('No objects have been added.')
         else:
@@ -119,12 +148,13 @@ class SynthImage(object):
                 obj.index += 1
                 obj = obj.time_func(obj, **obj.time_params)
                 obj = obj.trans_func(obj, **obj.trans_params)
-                overlap.paste(obj.img, box=obj.loc, mask=obj.img)
-                try:
-                    self.occupied[obj.label].update(obj.occupied_coords())
-                except KeyError:
-                    self.occupied[obj.label] = set([])
-        self.img = ImageChops.add(self.img, overlap)
+                self.img = self._embed_img(obj.img, self.img, obj.loc)
+            self._update_mask()
+        return
+    
+    def _update_mask(self):
+        self.mask = np.copy(self.img)
+        self.mask[self.img.sum(axis=2) > 0] = 255
         return
     
     def set_noise_func(self, noise_func, kwargs={}):
@@ -137,95 +167,93 @@ class SynthImage(object):
         return
     
     def show(self):
-        self.img.show()
+        imshow(self.img)
         return
     
-    def save(self, filename='image.tif'):
-        if os.path.exists(filename):
-            os.unlink(filename)
-        self.img.save(filename)
-        return
-
-
-# class for image stack
-class SynthImageStack(object):
-    def __init__(self, frame, n_frames):
-        self.stack = []
-        self.frame = frame
-        self.n_frames = n_frames
-    
-    #def __str__(self):
-        #return
-    
-    def build_stack(self):
-        for n in range(self.n_frames):
-            self.frame.update_objs()
-            self.frame.apply_noise()
-            self.stack.append(self.frame.img)
-            self.frame.index += 1
-        return
-    
-    def save(self, filename='image.tif'):
-        if os.path.exists(filename):
-            os.unlink(filename)
-        with AppendingTiffWriter(filename) as tf:
-            for stack_img in self.stack:
-                stack_img.save(tf)
-                tf.newFrame()
+    def save(self, fname='image.tif'):
+        if os.path.exists(fname):
+            os.unlink(fname)
+        imsave(fname, self.img)
         return
 
 
-# modular functions
-def brownian(obj, dt=1, delta=5):
-    x, y = obj.loc
-    x += np.random.randn() * 2*delta*dt
-    y += np.random.randn() * 2*delta*dt
-    obj.loc = (int(x), int(y))
-    return obj
-
-
-def random_loc(frame, mask=np.array([])):
-    x_high, y_high = frame.shape
-    x_loc = np.random.randint(0, x_high)
-    y_loc = np.random.randint(0, y_high)
-    if mask.any():
-        coords = np.argwhere(mask)
-        x_loc, y_loc = coords[np.random.randint(0, len(coords))]
-    return x_loc, y_loc
-
-
-def uniform_noise(frame):
-    x_high, y_high = frame.size
-    xs = np.random.randint(0, x_high, size=1000)
-    ys = np.random.randint(0, y_high, size=1000)
-    draw = ImageDraw.Draw(frame)
-    draw.point(list(zip(xs, ys)), fill=(127, 127, 127))
-    return frame
-
-
-# helper functions
-def generate_objs(ObjClass, n, label, class_params={},
+def generate(ObjClass, n, label, class_params={},
                   time_func=lambda obj: obj, time_params={}, 
-                  trans_func=lambda obj: obj, trans_params={}):
+                  trans_func=lambda obj: obj, trans_params={},
+                  loc_func=lambda obj: obj, loc_params={}):
     objs = []
     for i in range(n):
         obj = ObjClass(label, **class_params)
         obj.set_time_func(time_func, time_params)
         obj.set_trans_func(trans_func, trans_params)
+        obj.set_loc_func(loc_func, loc_params)
         objs.append(obj)
     return objs
 
 
-def make_mask(img_name):
-    if type(img_name) is Image.Image:
-        mask = np.asarray(img_name.convert(mode='1')).T
-    elif type(img_name) is str:
-        mask = np.asarray(Image.open(img_name).convert(mode='1')).T
-    return mask
+# modular functions
+def brownian(obj, dt=1, delta=5):
+    y, x = obj.loc
+    y += np.random.randn() * 2*delta*dt
+    x += np.random.randn() * 2*delta*dt
+    obj.loc = (int(y), int(x))
+    return obj
+
+
+def uniform_noise(frame):
+    ys = np.random.randint(0, frame.shape[0], size=100)
+    xs = np.random.randint(0, frame.shape[1], size=100)
+    noise = np.zeros(frame.shape, dtype=np.uint8)
+    noise[ys, xs, :] = 127
+    frame += noise
+    return frame
+
+
+def random_loc(obj, shape=(0, 0)):
+    x_high, y_high = shape
+    x_loc = np.random.randint(0, x_high)
+    y_loc = np.random.randint(0, y_high)
+    obj.loc = (y_loc, x_loc)
+    return obj
+
+
+# class for image stack
+class SynthImageStack(object):
+    def __init__(self, frame, n_frames):
+        self.stack = np.zeros((n_frames,) + frame.shape, dtype=np.uint8)
+        self.frame = frame
+        self.n_frames = n_frames
+        self.data = []
+    
+    def build_stack(self):
+        for n in range(self.n_frames):
+            self.frame.update_objs()
+            self.frame.apply_noise()
+            self.stack[n, :, :, :] = self.frame.img
+            self.data.append(self.frame.get_data())
+            self.frame.index += 1
+        return
+    
+    def save(self, fname='image.tif'):
+        imsave(fname, self.stack)
+        return
 
 
 # test the API
-# two types of brownian motion particles with masks
+green = generate(Particle, 50, 'green', class_params={'color': (0,255,0), 
+                    'shape': (30, 30, 3)})
+purple = generate(Particle, 50, 'purple', class_params={'color': (255,0,255), 
+                    'shape': (30, 30, 3)})
+
+frame = SynthImage(shape=(512, 512, 3))
+frame.set_noise_func(uniform_noise)
+
+frame.add_objs(green, random_loc)
+frame.add_objs(purple, random_loc)
+frame.apply_noise()
+frame.show()
+
+
 def two_phase_brownian(obj, dt=1, time_switch=5, delta1=5, delta2=40):
     x, y = obj.loc
     if obj.index < time_switch:
@@ -237,49 +265,16 @@ def two_phase_brownian(obj, dt=1, time_switch=5, delta1=5, delta2=40):
     obj.loc = (int(x), int(y))
     return obj
 
-
-red_dots = generate_objs(Particle, 200, 'foo', time_func=brownian, 
+red_dots = generate(Particle, 20, 'foo', time_func=brownian, 
                          class_params={'color': (255,0,0)})
-blue_dots = generate_objs(Particle, 200, 'bar', time_func=two_phase_brownian, 
+blue_dots = generate(Particle, 20, 'bar', time_func=two_phase_brownian, 
                           class_params={'color': (0,0,255)})
 
-ying = make_mask('ying.png')
-yang = make_mask('yang.png')
-
 frame = SynthImage()
-frame.add_objs(red_dots, random_loc, mask=ying)
-frame.add_objs(blue_dots, random_loc, mask=yang)
+frame.add_objs(red_dots, random_loc)
+frame.add_objs(blue_dots, random_loc)
 frame.set_noise_func(uniform_noise)
 
-stack = SynthImageStack(frame, 10)
+stack = SynthImageStack(frame, n_frames=10)
 stack.build_stack()
-
-print(stack.frame)
-stack.save('yingyang.tif')
-
-
-# attraction factor simplified demo
-def attract_loc(frame, target='green'):
-    x_high, y_high = frame.shape
-    x_loc = np.random.randint(0, x_high)
-    y_loc = np.random.randint(0, y_high)
-    while (x_loc+15, y_loc+15) not in frame.occupied[target]:
-        x_loc = np.random.randint(0, x_high)
-        y_loc = np.random.randint(0, y_high)
-    return x_loc, y_loc
-
-green = generate_objs(Particle, 40, 'green', class_params={'color': (0,255,0), 
-                    'shape': (30, 30)})
-purple = generate_objs(Particle, 40, 'red', class_params={'color': (255,0,255), 
-                    'shape': (30, 30)})
-
-frame1 = SynthImage()
-frame1.add_objs(green, random_loc)
-frame1.add_objs(purple, random_loc)
-frame1.save('two_color_random.tif')
-
-frame2 = SynthImage()
-frame2.add_objs(green, random_loc)
-frame2.add_objs(purple, attract_loc)
-frame2.save('two_color_attract.tif')
-
+stack.save('two_phase.tif')
