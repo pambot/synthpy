@@ -149,8 +149,11 @@ class SynthImage(object):
         y2, x2 = l0+yrm, l1+xrm
         ybi1, ybi2, yfi1, yfi2 = cls._bound_overflow(l0, y1, y2, b0, f0)
         xbi1, xbi2, xfi1, xfi2 = cls._bound_overflow(l1, x1, x2, b1, f1)
-        frame[yfi1:yfi2, xfi1:xfi2, :] += img[ybi1:ybi2, xbi1:xbi2, :]
-        frame[frame > 255] = 255
+        overlap = np.zeros((yfi2-yfi1, xfi2-xfi1, 3))
+        overlap += frame[yfi1:yfi2, xfi1:xfi2, :]
+        overlap += img[ybi1:ybi2, xbi1:xbi2, :]
+        overlap[overlap > 255] = 255
+        frame[yfi1:yfi2, xfi1:xfi2, :] = overlap.astype(np.uint8)
         return frame
     
     def add_objs(self, objs, init_loc_func, init_loc_params={}):
@@ -159,8 +162,7 @@ class SynthImage(object):
         except KeyError:
             init_loc_params['shape'] = self.shape[:2]
         for obj in objs:
-            obj.init_loc_func = init_loc_func
-            obj.init_loc_params = init_loc_params
+            obj.set_init_loc_func(init_loc_func, init_loc_params)
             obj = obj.init_loc_func(obj, **obj.init_loc_params)
             self.img = self._embed_img(obj.img, self.img, obj.loc)
             self.objs.append(obj)
@@ -266,7 +268,7 @@ frame.set_noise_func(uniform_noise)
 frame.add_objs(green, random_loc)
 frame.add_objs(purple, random_loc)
 frame.apply_noise()
-frame.show()
+#frame.show()
 
 
 def two_phase_brownian(obj, dt=1, time_loc_switch=5, delta1=5, delta2=40):
@@ -292,7 +294,7 @@ frame.set_noise_func(uniform_noise)
 
 stack = SynthImageStack(frame, n_frames=10)
 stack.build_stack()
-stack.save('two_phase.tif')
+#stack.save('two_phase.tif')
 
 
 # now make real examples
@@ -317,7 +319,6 @@ def segment_channel(cell_img, ch):
         img_slice = np.zeros(channel_slice.shape + (3,), dtype=np.uint8)
         img_slice[:, :, ch] = channel_slice
         img_slices.append(img_slice)
-    
     return img_slices
 
 
@@ -331,12 +332,3 @@ frame = SynthImage()
 frame.add_objs(red, random_loc)
 frame.add_objs(green, random_loc)
 frame.save('test.tif')
-
-
-
-"""
-plt.figure()
-plt.imshow(blobs.sum(axis=2), cmap='spectral')
-plt.tight_layout()
-plt.show()
-"""
