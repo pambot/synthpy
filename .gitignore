@@ -1,0 +1,17 @@
+# linux files
+*~
+
+# generated images
+*.png
+*.tif
+
+# sequence files
+*.fa
+*.fastq
+*.bed
+
+# miscellaneous
+misc/
+data/
+ABSTRACT.md
+TODO.md
