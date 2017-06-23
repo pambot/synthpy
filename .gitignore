@@ -15,3 +15,6 @@ misc/
 data/
 ABSTRACT.md
 TODO.md
+
+# ipython
+.ipynb_checkpoints/
