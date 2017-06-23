@@ -8,14 +8,14 @@ from skimage.io import use_plugin, imread
 use_plugin('tifffile', 'imsave')
 
 
-# base class of simulation objects
 class SynthImageObj(object):
+    """Abstract class for generating synthetic objects."""
     
     __metaclass__  = abc.ABCMeta
     
     def __init__(self, label, img=np.zeros((0, 0, 3), dtype=np.uint8), index=0, loc=(0, 0), 
-                 time_loc_func=lambda obj, field: (obj, field), time_loc_params={}, 
-                 init_loc_func=lambda obj, field: (obj, field), init_loc_params={}):
+                 time_loc_func=lambda actor, stage: (actor, stage), time_loc_params={}, 
+                 init_loc_func=lambda actor, stage: (actor, stage), init_loc_params={}):
         self.oid = uuid4()
         self.index = index
         self.label = label
@@ -44,15 +44,103 @@ class SynthImageObj(object):
     
     @classmethod
     def generate(cls, n, *args, **kwargs):
-        objs = []
+        """Auto-generates a number of instances of the attached class.
+        
+        Parameters
+        ----------
+        n : int
+            The number of desired instances.
+        
+        *args:
+            Arguments for instantiating the attached class.
+        
+        **kwargs:
+            Keyword arguments for instantiating the attached class.
+        
+        Returns
+        -------
+        actors : list of instances of the attached class.
+        
+        """
+        actors = []
         for i in range(n):
-            obj = cls(*args, **kwargs)
-            objs.append(obj)
-        return objs
+            actor = cls(*args, **kwargs)
+            actors.append(actor)
+        return actors
 
 
-# specific types of simulation objects
 class Particle(SynthImageObj):
+    """A class for generating circular synthetic objects. This is
+    mostly a testing stand-in for when you don't yet have data for the
+    FileImage class.
+    
+    Parameters
+    ----------
+    label : str, int
+        The label to distinguish a set of objects in an experiment.
+    
+    shape : tuple, optional (default=(9, 9, 3))
+        A tuple of height `m` and wdith `n`, with 3 indicating an RGB image.
+    
+    color : tuple, optional (default=(255, 255, 255))
+        A (0-255, 0-255, 0-255) RGB tuple to color the circle.
+    
+    index : int, optional (default=0)
+        Bind a time index to the object, allowing time-dependent behaviour.
+    
+    loc : tuple, optional (default=(0, 0))
+        Bind a location on the stage space to the object
+    
+    time_loc_func : function, optional (default=lambda actor: actor)
+        A hook for binding custom time-dependent behaviour. If left unset, 
+        it will result in a synthetic object that doesn't move or change 
+        over time.
+    
+    time_loc_params: dict, optional (default={})
+        A dictionary of parameters to feed into `time_loc_func`. Pre-built
+        Synthpy functions don't often have additional paramters, but custom ones
+        often will.
+    
+    init_loc_func : function, optional (default=lambda actor: actor)
+        A hook for binding custom localization initialization. If left unset,
+        it will result in a synthetic object that centers at `loc=(0, 0)`.
+    
+    init_loc_params: dict, optional (default={})
+        A dictionary of parameters to feed into `init_loc_func`. Pre-built
+        Synthpy functions don't often have additional paramters, but custom ones
+        often will.
+    
+    Attributes
+    ----------
+    label : str, int
+        The label to distinguish a set of objects in an experiment.
+    
+    shape : tuple, optional (default=(9, 9, 3))
+        A tuple of height `m` and wdith `n`, with 3 indicating an RGB image.
+    
+    img : np.ndarray
+        A `m` by `n` by 3 Numpy array that constitutes the image representation
+        of the synthetic object.
+    
+    index : int, optional (default=0)
+        Bind a time index to the object, allowing time-dependent behaviour.
+    
+    loc : tuple, optional (default=(0, 0))
+        Bind a location on the stage space to the object
+    
+    time_loc_func : function, optional (default=lambda actor: actor)
+        The function loaded into the `time_loc_func` hook.
+    
+    time_loc_params: dict, optional (default={})
+        The parameters loaded into `time_loc_func`.
+    
+    init_loc_func : function, optional (default=lambda actor: actor)
+        The function loaded into the `init_loc_func` hook.
+    
+    init_loc_params: dict, optional (default={})
+        The parameters loaded into `init_loc_func`.
+    
+    """
     def __init__(self, label, shape=(9, 9, 3), color=(255,255,255), **kwargs):
         super().__init__(label, **kwargs)
         self.shape = shape
@@ -63,6 +151,72 @@ class Particle(SynthImageObj):
 
 
 class FileImage(SynthImageObj):
+    """A class for generating synthetic objects from segmented images. A
+    `FileImage` object should be derived from pieces of real experimental image
+    files that represent an object whose movement across space and time is being
+    simulated.
+    
+    Parameters
+    ----------
+    label : str, int
+        The label to distinguish a set of objects in an experiment.
+    
+    index : int, optional (default=0)
+        Bind a time index to the object, allowing time-dependent behaviour.
+    
+    loc : tuple, optional (default=(0, 0))
+        Bind a location on the stage space to the object
+    
+    time_loc_func : function, optional (default=lambda actor: actor)
+        A hook for binding custom time-dependent behaviour. If left unset, 
+        it will result in a synthetic object that doesn't move or change 
+        over time.
+    
+    time_loc_params: dict, optional (default={})
+        A dictionary of parameters to feed into `time_loc_func`. Pre-built
+        Synthpy functions don't often have additional paramters, but custom ones
+        often will.
+    
+    init_loc_func : function, optional (default=lambda actor: actor)
+        A hook for binding custom localization initialization. If left unset,
+        it will result in a synthetic object that centers at `loc=(0, 0)`.
+    
+    init_loc_params: dict, optional (default={})
+        A dictionary of parameters to feed into `init_loc_func`. Pre-built
+        Synthpy functions don't often have additional paramters, but custom ones
+        often will.
+    
+    Attributes
+    ----------
+    label : str, int
+        The label to distinguish a set of objects in an experiment.
+    
+    shape : tuple, optional (default=(9, 9, 3))
+        A tuple of height `m` and wdith `n`, with 3 indicating an RGB image.
+    
+    img : np.ndarray
+        A `m` by `n` by 3 Numpy array that constitutes the image representation
+        of the synthetic object.
+    
+    index : int, optional (default=0)
+        Bind a time index to the object, allowing time-dependent behaviour.
+    
+    loc : tuple, optional (default=(0, 0))
+        Bind a location on the stage space to the object
+    
+    time_loc_func : function, optional (default=lambda actor: actor)
+        The function loaded into the `time_loc_func` hook.
+    
+    time_loc_params: dict, optional (default={})
+        The parameters loaded into `time_loc_func`.
+    
+    init_loc_func : function, optional (default=lambda actor: actor)
+        The function loaded into the `init_loc_func` hook.
+    
+    init_loc_params: dict, optional (default={})
+        The parameters loaded into `init_loc_func`.
+    
+    """
     def __init__(self, file_img, label, **kwargs):
         if type(file_img) is str:
             img = imread(file_img)
@@ -80,9 +234,33 @@ class FileImage(SynthImageObj):
     
     @classmethod
     def generate(cls, n, file_img_array, label, **kwargs):
+        """Auto-generates a number of instances of the `FileImage` class.
+        
+        Parameters
+        ----------
+        n : int
+            The number of desired instances.
+        
+        label : str, int
+            The label to distinguish a set of objects in an experiment.
+        
+        file_img_array : list, tuple of (m, n, 3) shape np.ndarray
+            An array of RGB images to become synthetic objects.
+        
+        *args:
+            Arguments for instantiating the `FileImage` class.
+        
+        **kwargs:
+            Keyword arguments for instantiating the `FileImage` class.
+        
+        Returns
+        -------
+        actors : list of instances of the `FileImage` class.
+        
+        """
         random_imgs = np.random.choice(file_img_array, size=n, replace=False)
-        objs = []
+        actors = []
         for f_img in random_imgs:
-            obj = cls(f_img, label, **kwargs)
-            objs.append(obj)
-        return objs
+            actor = cls(f_img, label, **kwargs)
+            actors.append(actor)
+        return actors

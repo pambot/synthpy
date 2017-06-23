@@ -1,3 +1,3 @@
 from .stage import *
 from .actors import *
-from .props import *
+from .scripts import *
